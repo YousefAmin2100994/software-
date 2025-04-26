@@ -1,63 +1,91 @@
-# main.py
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import asyncpg
-import os
+from typing import List
+import datetime
+import psycopg2
 
 app = FastAPI()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+# Database connection
+def get_db():
+    conn = psycopg2.connect(
+        dbname="your_db_name",
+        user="your_username",
+        password="your_password",
+        host="localhost",
+        port="5432"
+    )
+    return conn
 
-
-@app.on_event("startup")
-async def startup():
-    app.state.db = await asyncpg.create_pool(DATABASE_URL)
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    await app.state.db.close()
-
-
+# models
 class AddMoneyRequest(BaseModel):
     account_id: int
     amount: int
+
+class WalletDetailsResponse(BaseModel):
+    account_id: int
+    balance: int
+
+class TransactionResponse(BaseModel):
+    amount: int
     timestamp: int
 
-
-@app.get("/e-wallet")
-async def get_wallet_details(account_id: int):
-    async with app.state.db.acquire() as conn:
-        result = await conn.fetchrow("""
-            SELECT account_id, balance FROM ACCOUNT WHERE account_id = $1
-        """, account_id)
-        if not result:
+# wallet details
+@app.get("/e-wallet", response_model=WalletDetailsResponse)
+def get_wallet_details(account_id: int):
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT account_id, balance FROM ACCOUNT WHERE account_id = %s", (account_id,))
+        result = cur.fetchone()
+        if result:
+            return {"account_id": result[0], "balance": result[1]}
+        else:
             raise HTTPException(status_code=404, detail="Account not found")
-    return dict(result)
+    finally:
+        cur.close()
+        conn.close()
 
-
+# Add money to wallet
 @app.post("/e-wallet")
-async def add_money_to_wallet(request: AddMoneyRequest):
-    async with app.state.db.acquire() as conn:
-        async with conn.transaction():
-            # Update balance
-            await conn.execute("""
-                UPDATE ACCOUNT SET balance = balance + $1 WHERE account_id = $2
-            """, request.amount, request.account_id)
+def add_money_to_wallet(request: AddMoneyRequest):
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        # Update balance
+        cur.execute(
+            "UPDATE ACCOUNT SET balance = balance + %s WHERE account_id = %s RETURNING balance",
+            (request.amount, request.account_id)
+        )
+        updated_balance = cur.fetchone()
+        if not updated_balance:
+            raise HTTPException(status_code=404, detail="Account not found")
+        
+        # Insert into MONEY_TRANSACTION
+        current_timestamp = int(datetime.datetime.utcnow().timestamp())
+        cur.execute(
+            "INSERT INTO MONEY_TRANSACTION (amount, timestamp, account_id) VALUES (%s, %s, %s)",
+            (request.amount, current_timestamp, request.account_id)
+        )
 
-            # Insert transaction
-            await conn.execute("""
-                INSERT INTO MONEY_TRANSACTION (amount, timestamp, account_id)
-                VALUES ($1, $2, $3)
-            """, request.amount, request.timestamp, request.account_id)
-    return {"message": "Money added to wallet"}
+        conn.commit()
+        return {"message": "Money added successfully", "new_balance": updated_balance[0]}
+    finally:
+        cur.close()
+        conn.close()
 
-
-@app.get("/e-wallet/transactions")
-async def get_transaction_history(account_id: int):
-    async with app.state.db.acquire() as conn:
-        records = await conn.fetch("""
-            SELECT amount, timestamp FROM MONEY_TRANSACTION
-            WHERE account_id = $1 ORDER BY timestamp DESC
-        """, account_id)
-    return [dict(record) for record in records]
+# Get transaction history
+@app.get("/e-wallet/transactions", response_model=List[TransactionResponse])
+def get_transaction_history(account_id: int):
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT amount, timestamp FROM MONEY_TRANSACTION WHERE account_id = %s ORDER BY timestamp DESC",
+            (account_id,)
+        )
+        transactions = cur.fetchall()
+        return [{"amount": t[0], "timestamp": t[1]} for t in transactions]
+    finally:
+        cur.close()
+        conn.close()
