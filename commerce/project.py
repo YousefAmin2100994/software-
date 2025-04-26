@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
@@ -9,11 +11,11 @@ app = FastAPI()
 # Database connection
 def get_db():
     conn = psycopg2.connect(
-        dbname="your_db_name",
-        user="your_username",
-        password="your_password",
-        host="localhost",
-        port="5432"
+        dbname=os.environ.get('POSTGRES_DATABASE'),
+        user=os.environ.get('POSTGRES_USER'),
+        password=os.environ.get('POSTGRES_PASSWORD'),
+        host=os.environ.get('POSTGRES_HOST'),
+        port=os.environ.get('POSTGRES_PORT')
     )
     return conn
 
