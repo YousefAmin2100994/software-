@@ -1,6 +1,8 @@
 import os
 
-from fastapi import FastAPI, HTTPException
+import httpx
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List
 import datetime
@@ -19,13 +21,58 @@ def get_db():
     )
     return conn
 
+# Middleware to validate JWT and extract account_id
+async def auth_middleware(request: Request, call_next):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "Invalid or missing Authorization header"}
+        )
+
+    token = auth_header.split(" ")[1]
+
+    # Call auth microservice to validate token and get account_id
+    async with httpx.AsyncClient() as client:
+        try:
+            # noinspection HttpUrlsUsage
+            response = await client.post(
+                "http://" + os.environ.get('AUTH_HOST')  + ":" + os.environ.get('AUTH_PORT') + "/auth/verify-token",
+                json={"token": token},
+                timeout=5.0
+            )
+            response.raise_for_status()
+            auth_data = response.json()
+            account_id = auth_data.get("user")
+            if not account_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token: account_id not found"
+                )
+            # Attach account_id to request state
+            request.state.account_id = account_id
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token validation failed"
+            )
+        except httpx.RequestError:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Auth service unavailable"
+            )
+
+    response = await call_next(request)
+    return response
+
+# Register middleware
+app.middleware("http")(auth_middleware)
+
 # models
 class AddMoneyRequest(BaseModel):
-    account_id: int
     amount: int
 
 class WalletDetailsResponse(BaseModel):
-    account_id: int
     balance: int
 
 class TransactionResponse(BaseModel):
@@ -34,11 +81,11 @@ class TransactionResponse(BaseModel):
 
 # wallet details
 @app.get("/e-wallet", response_model=WalletDetailsResponse)
-def get_wallet_details(account_id: int):
+def get_wallet_details(request: Request):
     conn = get_db()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT account_id, balance FROM ACCOUNT WHERE account_id = %s", (account_id,))
+        cur.execute("SELECT account_id, balance FROM ACCOUNT WHERE account_id = %s", (request.state.account_id,))
         result = cur.fetchone()
         if result:
             return {"account_id": result[0], "balance": result[1]}
@@ -57,7 +104,7 @@ def add_money_to_wallet(request: AddMoneyRequest):
         # Update balance
         cur.execute(
             "UPDATE ACCOUNT SET balance = balance + %s WHERE account_id = %s RETURNING balance",
-            (request.amount, request.account_id)
+            (request.amount, request.state.account_id)
         )
         updated_balance = cur.fetchone()
         if not updated_balance:
@@ -67,7 +114,7 @@ def add_money_to_wallet(request: AddMoneyRequest):
         current_timestamp = int(datetime.datetime.utcnow().timestamp())
         cur.execute(
             "INSERT INTO MONEY_TRANSACTION (amount, timestamp, account_id) VALUES (%s, %s, %s)",
-            (request.amount, current_timestamp, request.account_id)
+            (request.amount, current_timestamp, request.state.account_id)
         )
 
         conn.commit()
@@ -78,13 +125,13 @@ def add_money_to_wallet(request: AddMoneyRequest):
 
 # Get transaction history
 @app.get("/e-wallet/transactions", response_model=List[TransactionResponse])
-def get_transaction_history(account_id: int):
+def get_transaction_history(request: Request):
     conn = get_db()
     cur = conn.cursor()
     try:
         cur.execute(
             "SELECT amount, timestamp FROM MONEY_TRANSACTION WHERE account_id = %s ORDER BY timestamp DESC",
-            (account_id,)
+            (request.state.account_id,)
         )
         transactions = cur.fetchall()
         return [{"amount": t[0], "timestamp": t[1]} for t in transactions]

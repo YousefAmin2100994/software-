@@ -2,3 +2,4 @@ fastapi
 uvicorn[standard]
 asyncpg
 psycopg2-binary
+httpx
