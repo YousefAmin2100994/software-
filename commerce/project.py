@@ -97,14 +97,14 @@ def get_wallet_details(request: Request):
 
 # Add money to wallet
 @app.post("/e-wallet")
-def add_money_to_wallet(request: AddMoneyRequest):
+def add_money_to_wallet(body: AddMoneyRequest, request: Request):
     conn = get_db()
     cur = conn.cursor()
     try:
         # Update balance
         cur.execute(
             "UPDATE ACCOUNT SET balance = balance + %s WHERE account_id = %s RETURNING balance",
-            (request.amount, request.state.account_id)
+            (body.amount, request.state.account_id)
         )
         updated_balance = cur.fetchone()
         if not updated_balance:
@@ -114,7 +114,7 @@ def add_money_to_wallet(request: AddMoneyRequest):
         current_timestamp = int(datetime.datetime.utcnow().timestamp())
         cur.execute(
             "INSERT INTO MONEY_TRANSACTION (amount, timestamp, account_id) VALUES (%s, %s, %s)",
-            (request.amount, current_timestamp, request.state.account_id)
+            (body.amount, current_timestamp, request.state.account_id)
         )
 
         conn.commit()
