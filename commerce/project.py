@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List
-import datetime
+from datetime import datetime
 import psycopg2
 
 app = FastAPI()
@@ -111,7 +111,7 @@ def add_money_to_wallet(body: AddMoneyRequest, request: Request):
             raise HTTPException(status_code=404, detail="Account not found")
         
         # Insert into MONEY_TRANSACTION
-        current_timestamp = int(datetime.datetime.utcnow().timestamp())
+        current_timestamp = datetime.now()
         cur.execute(
             "INSERT INTO MONEY_TRANSACTION (amount, timestamp, account_id) VALUES (%s, %s, %s)",
             (body.amount, current_timestamp, request.state.account_id)
