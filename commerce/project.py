@@ -88,7 +88,7 @@ def get_wallet_details(request: Request):
         cur.execute("SELECT account_id, balance FROM ACCOUNT WHERE account_id = %s", (request.state.account_id,))
         result = cur.fetchone()
         if result:
-            return {"account_id": result[0], "balance": result[1]}
+            return {"balance": result[1]}
         else:
             raise HTTPException(status_code=404, detail="Account not found")
     finally:
@@ -134,7 +134,7 @@ def get_transaction_history(request: Request):
             (request.state.account_id,)
         )
         transactions = cur.fetchall()
-        return [{"amount": t[0], "timestamp": t[1]} for t in transactions]
+        return [{"amount": t[0], "timestamp": int(t[1].timestamp())} for t in transactions]
     finally:
         cur.close()
         conn.close()
