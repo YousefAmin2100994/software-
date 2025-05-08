@@ -1,6 +1,6 @@
 import os
 import unittest
-from commerce.paymob import create_session
+from commerce.project import create_session
 
 
 class PaymobIntegrationTest(unittest.TestCase):
