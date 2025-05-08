@@ -184,7 +184,7 @@ def add_money_to_wallet(body: AddMoneyRequest, request: Request):
         )
 
         conn.commit()
-        return {"session_id": create_session(body.amount)}
+        return {"payment_url": create_session(body.amount)}
     finally:
         cur.close()
         conn.close()
