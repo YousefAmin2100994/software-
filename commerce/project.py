@@ -6,7 +6,9 @@ from datetime import datetime
 import psycopg2
 import os
 from http.client import responses
-
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -88,6 +90,14 @@ def get_db():
     return conn
 
 async def auth_private_api(request: Request):
+    # TODO:
+    # host = request.headers.get("host")
+    # logger.info(f"Request from: {request.client.host} {host}")
+    # if host != os.environ.get('TRUST_HOST'):
+    #     raise HTTPException(
+    #         status_code=status.HTTP_403_FORBIDDEN,
+    #         detail="Unauthorized host"
+    #     )
     pass
 
 # Middleware to validate JWT and extract account_id
@@ -141,9 +151,11 @@ class WalletDetailsResponse(BaseModel):
 class TransactionResponse(BaseModel):
     amount: int
     timestamp: int
+
 class TransferMoneyRequest(BaseModel):
-    receiver_id: int
     amount: int
+    credit: int
+    debit: int
 
 @app.post("/e-wallet/transfer", dependencies=[Depends(auth_private_api)])
 def transfer_money(body: TransferMoneyRequest, request: Request):
@@ -157,7 +169,7 @@ def transfer_money(body: TransferMoneyRequest, request: Request):
 
         cur.execute(
             "UPDATE ACCOUNT SET balance = balance - %s WHERE account_id = %s AND balance >= %s RETURNING balance",
-            (body.amount, request.state.account_id, body.amount)
+            (body.amount, body.credit, body.amount)
         )
         sender_balance = cur.fetchone()
         if not sender_balance:
@@ -165,7 +177,7 @@ def transfer_money(body: TransferMoneyRequest, request: Request):
 
         cur.execute(
             "UPDATE ACCOUNT SET balance = balance + %s WHERE account_id = %s RETURNING balance",
-            (body.amount, body.receiver_id)
+            (body.amount, body.debit)
         )
         receiver_balance = cur.fetchone()
         if not receiver_balance:
@@ -174,19 +186,15 @@ def transfer_money(body: TransferMoneyRequest, request: Request):
         current_timestamp = datetime.now()
         cur.execute(
             "INSERT INTO MONEY_TRANSACTION (amount, timestamp, account_id) VALUES (%s, %s, %s)",
-            (-body.amount, current_timestamp, request.state.account_id)
+            (-body.amount, current_timestamp, body.credit)
         )
         cur.execute(
             "INSERT INTO MONEY_TRANSACTION (amount, timestamp, account_id) VALUES (%s, %s, %s)",
-            (body.amount, current_timestamp, body.receiver_id)
+            (body.amount, current_timestamp, body.debit)
         )
 
         conn.commit()
-        return {
-            "message": "Transfer successful",
-            "sender_new_balance": sender_balance[0],
-            "receiver_id": body.receiver_id
-        }
+        return
 
     except Exception as e:
         conn.rollback()
