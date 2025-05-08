@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, status, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List
@@ -87,8 +87,11 @@ def get_db():
     )
     return conn
 
+async def auth_private_api(request: Request):
+    pass
+
 # Middleware to validate JWT and extract account_id
-async def auth_middleware(request: Request, call_next):
+async def auth_middleware(request: Request):
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         return JSONResponse(
@@ -128,12 +131,6 @@ async def auth_middleware(request: Request, call_next):
                 detail="Auth service unavailable"
             )
 
-    response = await call_next(request)
-    return response
-
-# Register middleware
-app.middleware("http")(auth_middleware)
-
 # models
 class AddMoneyRequest(BaseModel):
     amount: int
@@ -144,9 +141,62 @@ class WalletDetailsResponse(BaseModel):
 class TransactionResponse(BaseModel):
     amount: int
     timestamp: int
+class TransferMoneyRequest(BaseModel):
+    receiver_id: int
+    amount: int
+
+@app.post("/e-wallet/transfer", dependencies=[Depends(auth_private_api)])
+def transfer_money(body: TransferMoneyRequest, request: Request):
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="Transfer amount must be positive")
+
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        conn.autocommit = False
+
+        cur.execute(
+            "UPDATE ACCOUNT SET balance = balance - %s WHERE account_id = %s AND balance >= %s RETURNING balance",
+            (body.amount, request.state.account_id, body.amount)
+        )
+        sender_balance = cur.fetchone()
+        if not sender_balance:
+            raise HTTPException(status_code=400, detail="Insufficient funds or sender not found")
+
+        cur.execute(
+            "UPDATE ACCOUNT SET balance = balance + %s WHERE account_id = %s RETURNING balance",
+            (body.amount, body.receiver_id)
+        )
+        receiver_balance = cur.fetchone()
+        if not receiver_balance:
+            raise HTTPException(status_code=404, detail="Receiver account not found")
+
+        current_timestamp = datetime.now()
+        cur.execute(
+            "INSERT INTO MONEY_TRANSACTION (amount, timestamp, account_id) VALUES (%s, %s, %s)",
+            (-body.amount, current_timestamp, request.state.account_id)
+        )
+        cur.execute(
+            "INSERT INTO MONEY_TRANSACTION (amount, timestamp, account_id) VALUES (%s, %s, %s)",
+            (body.amount, current_timestamp, body.receiver_id)
+        )
+
+        conn.commit()
+        return {
+            "message": "Transfer successful",
+            "sender_new_balance": sender_balance[0],
+            "receiver_id": body.receiver_id
+        }
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
 
 # wallet details
-@app.get("/e-wallet", response_model=WalletDetailsResponse)
+@app.get("/e-wallet", response_model=WalletDetailsResponse, dependencies=[Depends(auth_middleware)])
 def get_wallet_details(request: Request):
     conn = get_db()
     cur = conn.cursor()
@@ -162,7 +212,7 @@ def get_wallet_details(request: Request):
         conn.close()
 
 # Add money to wallet
-@app.post("/e-wallet")
+@app.post("/e-wallet", dependencies=[Depends(auth_middleware)])
 def add_money_to_wallet(body: AddMoneyRequest, request: Request):
     conn = get_db()
     cur = conn.cursor()
@@ -184,13 +234,13 @@ def add_money_to_wallet(body: AddMoneyRequest, request: Request):
         )
 
         conn.commit()
-        return {"payment_url": create_session(body.amount)}
+        return {"payment_url": create_session(body.amount * 100)}
     finally:
         cur.close()
         conn.close()
 
 # Get transaction history
-@app.get("/e-wallet/transactions", response_model=List[TransactionResponse])
+@app.get("/e-wallet/transactions", response_model=List[TransactionResponse], dependencies=[Depends(auth_middleware)])
 def get_transaction_history(request: Request):
     conn = get_db()
     cur = conn.cursor()
